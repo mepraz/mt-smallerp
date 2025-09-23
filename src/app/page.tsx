@@ -44,7 +44,7 @@ export default function LoginPage() {
               <GraduationCap className="h-8 w-8 text-primary-foreground" />
             </div>
           </div>
-          <CardTitle className="text-2xl font-bold">Bluebells ERP</CardTitle>
+          <CardTitle className="text-2xl font-bold">MT ERP</CardTitle>
           <CardDescription>Admin Login</CardDescription>
         </CardHeader>
         <CardContent>

@@ -3,7 +3,7 @@ import './globals.css';
 import { Toaster } from "@/components/ui/toaster";
 
 export const metadata: Metadata = {
-  title: 'Bluebells ERP',
+  title: 'MT ERP',
   description: 'A simple ERP for educational institutions.',
 };
 
