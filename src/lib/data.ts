@@ -4,15 +4,33 @@
 
 import { Db, ObjectId } from 'mongodb';
 import { connectToDatabase } from '@/lib/mongodb';
-import { Class, Student, Subject, Result, ClassFees, Invoice, InvoiceLineItem, SchoolSettings, Exam, User, PaymentTransaction } from '@/lib/types';
+import { Class, Student, Subject, Result, ClassFees, Invoice, InvoiceLineItem, SchoolSettings, Exam, User, PaymentTransaction, StudentBill, ClassMonthlySummary, StudentMarksheet } from '@/lib/types';
 import { redirect } from 'next/navigation';
 import { getSession, sessionOptions } from './session';
 import { cookies } from 'next/headers';
 import * as bcrypt from 'bcrypt';
+import { generateBillsPdf } from '@/components/pdf-bill';
+import { generateMarksheetPdf } from '@/components/pdf-marksheet';
+import { generateReceiptPdf } from '@/components/pdf-receipt';
 
 async function getDb(): Promise<Db> {
   const { db } = await connectToDatabase();
   return db;
+}
+
+async function getImageDataAsBase64(url: string): Promise<string | null> {
+    try {
+        const response = await fetch(url);
+        if (!response.ok) return null;
+        const arrayBuffer = await response.arrayBuffer();
+        const buffer = Buffer.from(arrayBuffer);
+        const base64 = buffer.toString('base64');
+        const mimeType = response.headers.get('content-type') || 'image/png';
+        return `data:${mimeType};base64,${base64}`;
+    } catch (error) {
+        console.error("Failed to fetch and process image on server:", error);
+        return null;
+    }
 }
 
 
@@ -106,14 +124,39 @@ export async function getSettings(): Promise<SchoolSettings> {
 
 export async function updateSettings(formData: FormData): Promise<void> {
     const db = await getDb();
+    
+    // Upload logo if present
+    const logoFile = formData.get('logo') as File;
+    let logoUrl;
+    if (logoFile && logoFile.size > 0) {
+        const imgbbApiKey = '657a6661a152716e967bd3000b05b701';
+        const uploadFormData = new FormData();
+        uploadFormData.append('image', logoFile);
+
+        const response = await fetch(`https://api.imgbb.com/1/upload?key=${imgbbApiKey}`, {
+            method: 'POST',
+            body: uploadFormData,
+        });
+        const result = await response.json();
+        if (result.success) {
+            logoUrl = result.data.url;
+        } else {
+            throw new Error('Failed to upload logo to ImgBB');
+        }
+    }
+
+    const currentSettings = await getSettings();
+    
     const schoolName = formData.get('schoolName') as string;
     const schoolAddress = formData.get('schoolAddress') as string;
     const schoolPhone = formData.get('schoolPhone') as string;
     
-    const settingsData: SchoolSettings = {};
-    if (schoolName) settingsData.schoolName = schoolName;
-    if (schoolAddress) settingsData.schoolAddress = schoolAddress;
-    if (schoolPhone) settingsData.schoolPhone = schoolPhone;
+    const settingsData: SchoolSettings = {
+        schoolName: schoolName || currentSettings.schoolName,
+        schoolAddress: schoolAddress || currentSettings.schoolAddress,
+        schoolPhone: schoolPhone || currentSettings.schoolPhone,
+        schoolLogoUrl: logoUrl || currentSettings.schoolLogoUrl,
+    };
 
     await db.collection('settings').updateOne(
         { key: 'school' },
@@ -221,6 +264,9 @@ export async function getStudents(filters: { classId?: string, name?: string } =
     address: s.address,
     openingBalance: s.openingBalance || 0,
     inTuition: s.inTuition || false,
+    dob: s.dob,
+    totalAttendance: s.totalAttendance,
+    presentAttendance: s.presentAttendance,
   }));
 }
 
@@ -238,6 +284,9 @@ export async function getStudentById(studentId: string): Promise<Student | null>
       address: student.address,
       openingBalance: student.openingBalance || 0,
       inTuition: student.inTuition || false,
+      dob: student.dob,
+      totalAttendance: student.totalAttendance,
+      presentAttendance: student.presentAttendance,
     };
   }
   
@@ -276,7 +325,11 @@ export async function updateStudent(studentId: string, formData: FormData): Prom
         address: formData.get('address') as string,
         openingBalance: Number(formData.get('openingBalance')),
         inTuition: formData.get('inTuition') === 'on',
+        dob: formData.get('dob') as string,
     };
+
+    // Clean up undefined fields
+    Object.keys(updateData).forEach(key => (updateData[key as keyof typeof updateData] === undefined || isNaN(updateData[key as keyof typeof updateData] as number)) && delete updateData[key as keyof typeof updateData]);
 
     await db.collection('students').updateOne(
         { _id: new ObjectId(studentId) },
@@ -284,14 +337,45 @@ export async function updateStudent(studentId: string, formData: FormData): Prom
     );
 }
 
-// --- Accounting / Invoicing ---
-export async function getPayments(studentId: string): Promise<PaymentTransaction[]> {
+export async function updateStudentAttendance(studentId: string, totalAttendance: number, presentAttendance: number): Promise<void> {
+    if (!ObjectId.isValid(studentId)) return;
     const db = await getDb();
-    const invoices = await db.collection('invoices').find({ studentId: new ObjectId(studentId) }).toArray();
+    await db.collection('students').updateOne(
+        { _id: new ObjectId(studentId) },
+        { $set: { totalAttendance, presentAttendance } }
+    );
+}
+
+
+// --- Accounting / Invoicing ---
+
+// Helper function to serialize invoices safely
+function serializeInvoice(invoice: any): Invoice {
+    return {
+      id: invoice._id.toString(),
+      studentId: invoice.studentId.toString(),
+      classId: invoice.classId.toString(),
+      month: invoice.month,
+      year: invoice.year,
+      lineItems: invoice.lineItems.map((li: any) => ({
+          feeType: li.feeType,
+          amount: li.amount,
+      })),
+      totalBilled: invoice.totalBilled,
+      payments: invoice.payments?.map((p: any) => ({ ...p, date: new Date(p.date).toISOString(), id: p._id.toString() })) || [],
+      totalPaid: invoice.totalPaid || 0,
+      balance: invoice.balance,
+      createdAt: new Date(invoice.createdAt),
+    };
+  }
+
+export async function getPayments(): Promise<PaymentTransaction[]> {
+    const db = await getDb();
+    const invoices = await db.collection('invoices').find({ 'payments.0': { $exists: true } }).toArray();
     let allPayments: PaymentTransaction[] = [];
     invoices.forEach(invoice => {
         if(invoice.payments) {
-            allPayments = [...allPayments, ...invoice.payments.map((p: any) => ({...p, id: p._id.toString()}))]
+            allPayments = [...allPayments, ...invoice.payments.map((p: any) => ({...p, id: p._id.toString(), date: p.date.toISOString() }))]
         }
     });
     return allPayments;
@@ -301,23 +385,8 @@ export async function getPayments(studentId: string): Promise<PaymentTransaction
 export async function getInvoicesForStudent(studentId: string): Promise<Invoice[]> {
     const db = await getDb();
     if (!ObjectId.isValid(studentId)) return [];
-    const invoices = await db.collection('invoices').find({ studentId: new ObjectId(studentId) }).sort({ year: -1, createdAt: -1 }).toArray();
-    return Promise.all(invoices.map(async i => {
-      const payments = i.payments?.map((p: any) => ({ ...p, date: new Date(p.date), id: p._id.toString() })) || [];
-      return {
-        id: i._id.toString(),
-        studentId: i.studentId.toString(),
-        classId: i.classId.toString(),
-        month: i.month,
-        year: i.year,
-        lineItems: i.lineItems,
-        totalBilled: i.totalBilled,
-        payments: payments,
-        totalPaid: i.totalPaid || 0,
-        balance: i.balance,
-        createdAt: i.createdAt,
-      }
-    }));
+    const invoicesData = await db.collection('invoices').find({ studentId: new ObjectId(studentId) }).sort({ year: -1, createdAt: -1 }).toArray();
+    return invoicesData.map(serializeInvoice);
 }
 
 export async function getInvoiceForMonth(studentId: string, month: string, year: number): Promise<Invoice | null> {
@@ -331,21 +400,8 @@ export async function getInvoiceForMonth(studentId: string, month: string, year:
 
     if (!invoiceData) return null;
 
-    return {
-        id: invoiceData._id.toString(),
-        studentId: invoiceData.studentId.toString(),
-        classId: invoiceData.classId.toString(),
-        month: invoiceData.month,
-        year: invoiceData.year,
-        lineItems: invoiceData.lineItems,
-        totalBilled: invoiceData.totalBilled,
-        payments: invoiceData.payments?.map((p: any) => ({ ...p, date: new Date(p.date), id: p._id.toString() })) || [],
-        totalPaid: invoiceData.totalPaid || 0,
-        balance: invoiceData.balance,
-        createdAt: invoiceData.createdAt,
-    };
+    return serializeInvoice(invoiceData);
 }
-
 
 export async function getLatestInvoice(studentId: string): Promise<Invoice | null> {
     const invoices = await getInvoicesForStudent(studentId);
@@ -357,7 +413,7 @@ export async function createOrUpdateInvoice(
     classId: string,
     month: string,
     year: number,
-    chargedFees: { feeType: keyof ClassFees; amount: number }[],
+    chargedFees: { feeType: string; amount: number }[],
     medicalFee: number
   ): Promise<string> {
     const db = await getDb();
@@ -400,7 +456,7 @@ export async function createOrUpdateInvoice(
       filteredLineItems.unshift({ feeType: 'Previous Dues', amount: previousBalance });
     }
   
-    const totalBilled = currentMonthFeesTotal + previousBalance;
+    const totalBilled = currentMonthFeesTotal + (previousBalance > 0 ? previousBalance : 0);
   
     const existingInvoice = await db.collection('invoices').findOne({ studentId: studentObjectId, month, year });
   
@@ -439,7 +495,7 @@ export async function bulkCreateInvoices(
     classId: string,
     month: string,
     year: number,
-    chargedFees: { feeType: keyof ClassFees; amount: number }[]
+    chargedFees: { feeType: string; amount: number }[]
   ): Promise<{ created: number; updated: number }> {
     const students = await getStudents({ classId });
     let createdCount = 0;
@@ -490,21 +546,52 @@ export async function addPayment(studentId: string, invoiceId: string, amount: n
         throw new Error("Failed to find and update the invoice.");
     }
     
-    // Adjust balance on all subsequent invoices for this student
     const studentObjectId = new ObjectId(studentId);
     const updatedInvoice = await db.collection('invoices').findOne({ _id: invoiceObjectId });
     if (!updatedInvoice) throw new Error("Could not retrieve updated invoice");
-
+    
+    // Find all invoices for the student that were created AFTER the one that was just paid.
     const subsequentInvoices = await db.collection('invoices').find({
         studentId: studentObjectId,
         createdAt: { $gt: updatedInvoice.createdAt }
     }).toArray();
-    
+
+    // The logic here should be to update the 'Previous Dues' line item and recalculate totals.
+    // A simple increment on the balance can lead to inconsistencies.
     for (const inv of subsequentInvoices) {
-        // Here we just adjust the balance based on the new payment, not re-calculating everything
+        const oldPreviousDuesItem = inv.lineItems.find((li: InvoiceLineItem) => li.feeType === 'Previous Dues');
+        const oldPreviousDues = oldPreviousDuesItem ? oldPreviousDuesItem.amount : 0;
+        
+        // The new "previous dues" for this subsequent invoice is the balance of the *just paid* invoice.
+        // We need to find the invoice right before `inv`.
+        const invoiceBeforeThisOne = await db.collection('invoices').findOne(
+            { studentId: studentObjectId, createdAt: { $lt: inv.createdAt } },
+            { sort: { createdAt: -1 } }
+        );
+
+        const newPreviousDues = invoiceBeforeThisOne ? invoiceBeforeThisOne.balance : 0;
+
+        const newFilteredLineItems = inv.lineItems.filter((li: InvoiceLineItem) => li.feeType !== 'Previous Dues');
+        if (newPreviousDues > 0) {
+            newFilteredLineItems.unshift({ feeType: 'Previous Dues', amount: newPreviousDues });
+        }
+        
+        const currentMonthFeesTotal = inv.lineItems
+            .filter((li: InvoiceLineItem) => li.feeType !== 'Previous Dues')
+            .reduce((acc: number, item: InvoiceLineItem) => acc + item.amount, 0);
+
+        const newTotalBilled = currentMonthFeesTotal + (newPreviousDues > 0 ? newPreviousDues : 0);
+        const newBalance = newTotalBilled - inv.totalPaid;
+
         await db.collection('invoices').updateOne(
             { _id: inv._id },
-            { $inc: { balance: -amount } }
+            {
+                $set: {
+                    lineItems: newFilteredLineItems,
+                    totalBilled: newTotalBilled,
+                    balance: newBalance
+                }
+            }
         );
     }
     return paymentRecord;
@@ -520,6 +607,170 @@ export async function checkInvoicesExistForMonth(classId: string, month: string,
     });
     return count > 0;
 }
+
+
+export async function generateAndDownloadBulkInvoices(
+    classId: string,
+    month: string,
+    year: number,
+    chargedFees: { feeType: string; amount: number }[]
+) {
+    const students = await getStudents({ classId });
+    const settings = await getSettings();
+    const studentClass = await getClassById(classId);
+
+    if (!studentClass) {
+        throw new Error("Class details not found.");
+    }
+    
+    const logoBase64 = settings.schoolLogoUrl ? await getImageDataAsBase64(settings.schoolLogoUrl) : null;
+
+    const bills: StudentBill[] = [];
+
+    for (const student of students) {
+        await createOrUpdateInvoice(student.id, classId, month, year, chargedFees, 0);
+        const invoice = await getInvoiceForMonth(student.id, month, year);
+
+        if (invoice) {
+            const previousDues = invoice.lineItems.find(li => li.feeType === 'Previous Dues')?.amount || 0;
+            bills.push({
+                school: settings,
+                student: student,
+                class: studentClass,
+                invoice: invoice,
+                previousDues,
+            });
+        }
+    }
+
+    if (bills.length > 0) {
+        await generateBillsPdf(bills, logoBase64);
+
+    } else {
+        throw new Error("No students found or no invoices could be generated.");
+    }
+}
+
+// --- OPTIMIZED Accounting ---
+export async function getFeeSummaryForClass(classId: string, month: string, year: number): Promise<{ summaries: any[], monthlySummary: ClassMonthlySummary }> {
+    const db = await getDb();
+    if (!ObjectId.isValid(classId)) return { summaries: [], monthlySummary: { totalBilled: 0, totalCollected: 0, totalDues: 0 } };
+
+    const studentClass = await getClassById(classId);
+    if (!studentClass) return { summaries: [], monthlySummary: { totalBilled: 0, totalCollected: 0, totalDues: 0 } };
+
+    const students = await getStudents({ classId });
+    const studentIds = students.map(s => new ObjectId(s.id));
+
+    // Fetch all relevant invoices in one go
+    const allInvoices = await db.collection('invoices').find({ studentId: { $in: studentIds } }).sort({ createdAt: -1 }).toArray();
+
+    let totalBilledMonth = 0;
+    let totalCollectedMonth = 0;
+
+    const summaries = students.map(student => {
+        // Find invoices for this student from the prefetched list
+        const studentInvoices = allInvoices.filter(inv => inv.studentId.toString() === student.id);
+        const invoiceForMonth = studentInvoices.find(inv => inv.month === month && inv.year === year);
+        const latestInvoiceOverall = studentInvoices.length > 0 ? studentInvoices[0] : null;
+
+        const overallBalance = latestInvoiceOverall ? latestInvoiceOverall.balance : (student.openingBalance || 0);
+
+        let status: 'Paid' | 'Partial' | 'Unpaid' | 'Overpaid';
+        if(invoiceForMonth){
+            if (invoiceForMonth.balance <= 0) {
+                status = 'Paid';
+                if (invoiceForMonth.balance < 0) status = 'Overpaid';
+            } else if (invoiceForMonth.totalPaid > 0) {
+                status = 'Partial';
+            } else {
+                status = 'Unpaid';
+            }
+        } else {
+            status = 'Unpaid';
+        }
+
+
+        if (invoiceForMonth) {
+            totalBilledMonth += invoiceForMonth.lineItems.reduce((acc: number, item: InvoiceLineItem) => item.feeType !== 'Previous Dues' ? acc + item.amount : acc, 0);
+            totalCollectedMonth += invoiceForMonth.totalPaid;
+        }
+
+        return {
+            student,
+            class: studentClass,
+            latestInvoice: invoiceForMonth ? serializeInvoice(invoiceForMonth) : null,
+            overallBalance,
+            status,
+        };
+    });
+
+    const totalDuesMonth = summaries.reduce((acc, s) => {
+        if (s.latestInvoice) {
+            return acc + s.latestInvoice.balance;
+        }
+        return acc + s.overallBalance;
+    }, 0);
+
+    const monthlySummary = { totalBilled: totalBilledMonth, totalCollected: totalCollectedMonth, totalDues: totalDuesMonth };
+
+    return { summaries, monthlySummary };
+}
+
+export async function getOverallFeeSummary(): Promise<ClassFeeSummary[]> {
+    const db = await getDb();
+    
+    // Fetch all data in parallel
+    const [classesData, studentsData, allInvoicesData] = await Promise.all([
+      getClasses(),
+      getStudents(),
+      db.collection('invoices').find().sort({ createdAt: -1 }).toArray()
+    ]);
+    
+    // Group students and invoices for efficient lookup
+    const studentsByClass = studentsData.reduce((acc, student) => {
+        (acc[student.classId] = acc[student.classId] || []).push(student);
+        return acc;
+    }, {} as Record<string, Student[]>);
+
+    const latestInvoicesByStudent = allInvoicesData.reduce((acc, invoice) => {
+        const studentId = invoice.studentId.toString();
+        if (!acc[studentId]) {
+            acc[studentId] = invoice;
+        }
+        return acc;
+    }, {} as Record<string, any>);
+
+
+    const summaries: ClassFeeSummary[] = classesData.map(c => {
+        const studentsInClass = studentsByClass[c.id] || [];
+        
+        let totalBilled = 0;
+        let totalCollected = 0;
+        let totalDues = 0;
+
+        for (const student of studentsInClass) {
+            const latestInvoice = latestInvoicesByStudent[student.id];
+            if (latestInvoice) {
+                totalBilled += latestInvoice.totalBilled;
+                totalCollected += latestInvoice.totalPaid;
+                totalDues += latestInvoice.balance;
+            } else {
+                 totalDues += student.openingBalance || 0;
+            }
+        }
+        
+        return {
+            class: c,
+            totalBilled,
+            totalCollected,
+            totalDues,
+        };
+    });
+    
+    return summaries;
+}
+
 
 // --- Exam Management ---
 export async function getExams(): Promise<Exam[]> {
@@ -556,19 +807,29 @@ export async function addExam(formData: FormData): Promise<void> {
 
 
 // --- Subject & Result Management ---
-export async function getSubjects(): Promise<Subject[]> {
+export async function getSubjects(filters: { classId?: string } = {}): Promise<Subject[]> {
   const db = await getDb();
-  const subjects = await db.collection('subjects').find().toArray();
+  const query: any = {};
+  if (filters.classId) {
+    if (ObjectId.isValid(filters.classId)) {
+        query.classId = new ObjectId(filters.classId);
+    } else {
+        return [];
+    }
+  }
+  const subjects = await db.collection('subjects').find(query).toArray();
   return subjects.map(s => ({
     id: s._id.toString(),
     name: s.name,
     classId: s.classId.toString(),
     fullMarksTheory: s.fullMarksTheory || 100,
     fullMarksPractical: s.fullMarksPractical || 0,
+    code: s.code || '',
+    isExtra: s.isExtra || false,
   }));
 }
 
-export async function addSubject(classId: string, name: string, fullMarksTheory: number, fullMarksPractical: number): Promise<void> {
+export async function addSubject(classId: string, name: string, fullMarksTheory: number, fullMarksPractical: number, code: string, isExtra: boolean): Promise<void> {
     if (!ObjectId.isValid(classId)) return;
     const db = await getDb();
     await db.collection('subjects').insertOne({
@@ -576,10 +837,12 @@ export async function addSubject(classId: string, name: string, fullMarksTheory:
         classId: new ObjectId(classId),
         fullMarksTheory,
         fullMarksPractical,
+        code,
+        isExtra,
     });
 }
 
-export async function updateSubject(subjectId: string, name: string, fullMarksTheory: number, fullMarksPractical: number): Promise<void> {
+export async function updateSubject(subjectId: string, name: string, fullMarksTheory: number, fullMarksPractical: number, code: string, isExtra: boolean): Promise<void> {
     if (!ObjectId.isValid(subjectId)) return;
     const db = await getDb();
     await db.collection('subjects').updateOne(
@@ -587,8 +850,8 @@ export async function updateSubject(subjectId: string, name: string, fullMarksTh
         {
             $set: {
                 name,
-                fullMarksTheory,
-                fullMarksPractical,
+                code,
+                isExtra,
             }
         }
     );
@@ -632,3 +895,36 @@ export async function addOrUpdateResult(examId: string, studentId: string, subje
         { upsert: true }
     );
 }
+
+// --- Data for Marksheet ---
+export async function getMarksheetDataForClass(examId: string, classId: string): Promise<StudentMarksheet[]> {
+    if (!ObjectId.isValid(examId) || !ObjectId.isValid(classId)) return [];
+
+    const [exam, studentClass, students, subjects, results] = await Promise.all([
+        getExamById(examId),
+        getClassById(classId),
+        getStudents({ classId }),
+        getSubjects({ classId }),
+        getResultsForExam(examId),
+    ]);
+
+    if (!exam || !studentClass) return [];
+    
+    return students.map(student => {
+        const studentResults = results.filter(r => r.studentId === student.id);
+        
+        const mergedResults = studentResults.map(res => {
+            const subject = subjects.find(s => s.id === res.subjectId);
+            return { ...res, ...(subject || {}) } as Result & Subject;
+        }).filter(r => r.name); // Filter out if subject not found
+
+        return {
+            student,
+            class: studentClass,
+            exam,
+            results: mergedResults,
+        };
+    });
+}
+
+    

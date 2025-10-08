@@ -49,6 +49,7 @@ import { useToast } from "@/hooks/use-toast"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import Link from "next/link"
 import { format } from "date-fns"
+import { Checkbox } from "@/components/ui/checkbox";
 
 
 function EditSubjectDialog({ subject, onSubjectUpdated }: { subject: Subject; onSubjectUpdated: () => void; }) {
@@ -56,13 +57,14 @@ function EditSubjectDialog({ subject, onSubjectUpdated }: { subject: Subject; on
   const [isOpen, setIsOpen] = React.useState(false);
   const [isLoading, setIsLoading] = React.useState(false);
   const [name, setName] = React.useState(subject.name);
-  const [theoryFm, setTheoryFm] = React.useState(subject.fullMarksTheory);
-  const [practicalFm, setPracticalFm] = React.useState(subject.fullMarksPractical);
+  const [code, setCode] = React.useState(subject.code);
+  const [isExtra, setIsExtra] = React.useState(subject.isExtra);
+
 
   const handleUpdate = async () => {
     setIsLoading(true);
     try {
-      await updateSubject(subject.id, name, theoryFm, practicalFm);
+      await updateSubject(subject.id, name, subject.fullMarksTheory, subject.fullMarksPractical, code, isExtra);
       toast({ title: "Success", description: "Subject updated successfully." });
       onSubjectUpdated();
       setIsOpen(false);
@@ -87,18 +89,18 @@ function EditSubjectDialog({ subject, onSubjectUpdated }: { subject: Subject; on
           <DialogTitle>Edit Subject: {subject.name}</DialogTitle>
           <DialogDescription>Update the details for this subject.</DialogDescription>
         </DialogHeader>
-        <div className="space-y-4 py-4">
+        <div className="space-y-4 py-4 max-h-[60vh] overflow-y-auto pr-4">
            <div>
             <Label htmlFor="subjectName">Subject Name</Label>
             <Input id="subjectName" type="text" value={name} onChange={(e) => setName(e.target.value)} />
           </div>
           <div>
-            <Label htmlFor="theoryFm">Theory Full Marks</Label>
-            <Input id="theoryFm" type="number" value={theoryFm} onChange={(e) => setTheoryFm(Number(e.target.value))} />
+            <Label htmlFor="subjectCode">Code</Label>
+            <Input id="subjectCode" type="text" value={code} onChange={(e) => setCode(e.target.value)} />
           </div>
-          <div>
-            <Label htmlFor="practicalFm">Practical Full Marks</Label>
-            <Input id="practicalFm" type="number" value={practicalFm} onChange={(e) => setPracticalFm(Number(e.target.value))} />
+          <div className="flex items-center space-x-2">
+            <Checkbox id="isExtra" checked={isExtra} onCheckedChange={(checked) => setIsExtra(Boolean(checked))} />
+            <Label htmlFor="isExtra">Is Extra Subject</Label>
           </div>
         </div>
         <DialogFooter>
@@ -165,8 +167,11 @@ function ManageSubjects() {
   const [isAdding, setIsAdding] = React.useState<Record<string, boolean>>({});
 
   const [newSubjectNames, setNewSubjectNames] = React.useState<Record<string, string>>({});
-  const [newSubjectTheoryFm, setNewSubjectTheoryFm] = React.useState<Record<string, number>>({});
-  const [newSubjectPracticalFm, setNewSubjectPracticalFm] = React.useState<Record<string, number>>({});
+  const [newSubjectCodes, setNewSubjectCodes] = React.useState<Record<string, string>>({});
+  const [newSubjectTheoryFm, setNewSubjectTheoryFm] = React.useState<Record<string, number | string>>({});
+  const [newSubjectPracticalFm, setNewSubjectPracticalFm] = React.useState<Record<string, number | string>>({});
+  const [newSubjectIsExtra, setNewSubjectIsExtra] = React.useState<Record<string, boolean>>({});
+
   
   const { toast } = useToast();
 
@@ -198,13 +203,18 @@ function ManageSubjects() {
     }
     setIsAdding(prev => ({ ...prev, [classId]: true }));
     try {
-      const theoryFm = newSubjectTheoryFm[classId] || 100;
-      const practicalFm = newSubjectPracticalFm[classId] || 0;
-      await addSubject(classId, subjectName, theoryFm, practicalFm);
+      const code = newSubjectCodes[classId] || '';
+      const theoryFm = Number(newSubjectTheoryFm[classId]) || 100;
+      const practicalFm = Number(newSubjectPracticalFm[classId]) || 0;
+      const isExtra = newSubjectIsExtra[classId] || false;
+
+      await addSubject(classId, subjectName, theoryFm, practicalFm, code, isExtra);
       
       setNewSubjectNames(prev => ({ ...prev, [classId]: '' }));
-      setNewSubjectTheoryFm(prev => ({...prev, [classId]: 0}));
-      setNewSubjectPracticalFm(prev => ({...prev, [classId]: 0}));
+      setNewSubjectCodes(prev => ({ ...prev, [classId]: '' }));
+      setNewSubjectTheoryFm(prev => ({...prev, [classId]: ''}));
+      setNewSubjectPracticalFm(prev => ({...prev, [classId]: ''}));
+      setNewSubjectIsExtra(prev => ({...prev, [classId]: false}));
 
       toast({ title: "Success", description: "Subject added successfully." });
       fetchData(); // Refresh subjects list
@@ -238,18 +248,18 @@ function ManageSubjects() {
                   <Table>
                       <TableHeader>
                           <TableRow>
+                              <TableHead>Code</TableHead>
                               <TableHead>Subject Name</TableHead>
-                              <TableHead className="text-center">Theory F.M.</TableHead>
-                              <TableHead className="text-center">Practical F.M.</TableHead>
+                              <TableHead className="text-center">Extra Subject</TableHead>
                               <TableHead className="text-right">Actions</TableHead>
                           </TableRow>
                       </TableHeader>
                       <TableBody>
                           {subjects.filter(s => s.classId === c.id).map(s => (
                               <TableRow key={s.id}>
+                                  <TableCell>{s.code}</TableCell>
                                   <TableCell>{s.name}</TableCell>
-                                  <TableCell className="text-center">{s.fullMarksTheory}</TableCell>
-                                  <TableCell className="text-center">{s.fullMarksPractical}</TableCell>
+                                  <TableCell className="text-center">{s.isExtra ? 'Yes' : 'No'}</TableCell>
                                   <TableCell className="text-right space-x-2">
                                     <EditSubjectDialog subject={s} onSubjectUpdated={fetchData} />
                                     <DeleteSubjectDialog subjectId={s.id} onSubjectDeleted={fetchData} />
@@ -266,9 +276,9 @@ function ManageSubjects() {
                        <Card key={s.id}>
                            <CardHeader className="flex flex-row items-start justify-between p-4">
                                <div>
-                                  <CardTitle className="text-base">{s.name}</CardTitle>
-                                   <div className="text-sm text-muted-foreground mt-2">
-                                     <span>Theory F.M: {s.fullMarksTheory}</span> | <span>Practical F.M: {s.fullMarksPractical}</span>
+                                  <CardTitle className="text-base">{s.name} ({s.code})</CardTitle>
+                                   <div className="text-sm text-muted-foreground mt-2 space-y-1">
+                                    <p>Extra Subject: {s.isExtra ? 'Yes' : 'No'}</p>
                                    </div>
                                </div>
                                <div className="flex gap-2">
@@ -282,25 +292,37 @@ function ManageSubjects() {
                 
                 <div className="p-4 border-t space-y-3">
                     <h4 className="font-medium">Add New Subject</h4>
-                    <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2 items-center">
                         <Input
-                            placeholder="New subject name"
+                            placeholder="Subject Name"
                             value={newSubjectNames[c.id] || ''}
                             onChange={(e) => setNewSubjectNames(prev => ({ ...prev, [c.id]: e.target.value }))}
-                            className="md:col-span-2"
+                        />
+                        <Input
+                            placeholder="Code"
+                            value={newSubjectCodes[c.id] || ''}
+                            onChange={(e) => setNewSubjectCodes(prev => ({ ...prev, [c.id]: e.target.value }))}
                         />
                          <Input
-                            placeholder="Theory Full Marks"
+                            placeholder="Theory F.M."
                             type="number"
                             value={newSubjectTheoryFm[c.id] || ''}
-                            onChange={(e) => setNewSubjectTheoryFm(prev => ({ ...prev, [c.id]: Number(e.target.value) }))}
+                            onChange={(e) => setNewSubjectTheoryFm(prev => ({ ...prev, [c.id]: e.target.value }))}
                         />
                          <Input
-                            placeholder="Practical Full Marks"
+                            placeholder="Practical F.M."
                              type="number"
                             value={newSubjectPracticalFm[c.id] || ''}
-                            onChange={(e) => setNewSubjectPracticalFm(prev => ({ ...prev, [c.id]: Number(e.target.value) }))}
+                            onChange={(e) => setNewSubjectPracticalFm(prev => ({ ...prev, [c.id]: e.target.value }))}
                         />
+                        <div className="flex items-center space-x-2">
+                          <Checkbox
+                            id={`isExtra-${c.id}`}
+                            checked={newSubjectIsExtra[c.id] || false}
+                            onCheckedChange={(checked) => setNewSubjectIsExtra(prev => ({ ...prev, [c.id]: Boolean(checked) }))}
+                          />
+                          <Label htmlFor={`isExtra-${c.id}`}>Is Extra Subject</Label>
+                        </div>
                     </div>
                      <Button variant="outline" onClick={() => handleAddSubject(c.id)} disabled={isAdding[c.id]}>
                         {isAdding[c.id] ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlusCircle className="mr-2 h-4 w-4" />}
@@ -386,3 +408,5 @@ export default function ResultsPage() {
     </div>
   )
 }
+
+    

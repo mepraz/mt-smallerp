@@ -17,7 +17,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft, Loader2, IndianRupee, User as UserIcon, Edit, Printer } from "lucide-react";
+import { ArrowLeft, Loader2, IndianRupee, User as UserIcon, Edit, Printer, Calendar as CalendarIcon } from "lucide-react";
 import * as React from "react";
 import type { Student, Class, Invoice, PaymentTransaction, StudentBill } from "@/lib/types";
 import { useToast } from "@/hooks/use-toast";
@@ -35,16 +35,24 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
 import { generateReceiptPdf } from "@/components/pdf-receipt";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Calendar } from "@/components/ui/calendar";
+import { cn } from "@/lib/utils";
+import { format } from "date-fns";
 
 
 function EditStudentDialog({ student, classes, onStudentUpdated }: { student: Student; classes: Class[]; onStudentUpdated: () => void; }) {
     const { toast } = useToast();
     const [isOpen, setIsOpen] = React.useState(false);
     const [isLoading, setIsLoading] = React.useState(false);
+    const [dob, setDob] = React.useState<Date | undefined>(student.dob ? new Date(student.dob) : undefined);
     
     async function handleUpdate(formData: FormData) {
         setIsLoading(true);
         try {
+            if (dob) {
+                formData.append('dob', dob.toISOString().split('T')[0]);
+            }
             await updateStudent(student.id, formData);
             toast({ title: "Success", description: "Student profile updated." });
             onStudentUpdated();
@@ -80,6 +88,34 @@ function EditStudentDialog({ student, classes, onStudentUpdated }: { student: St
                          <div>
                             <Label htmlFor="rollNumber">Roll Number</Label>
                             <Input id="rollNumber" name="rollNumber" type="number" defaultValue={student.rollNumber} />
+                        </div>
+                         <div>
+                            <Label htmlFor="dob">Date of Birth</Label>
+                             <Popover>
+                                <PopoverTrigger asChild>
+                                <Button
+                                    variant={"outline"}
+                                    className={cn(
+                                    "w-full justify-start text-left font-normal",
+                                    !dob && "text-muted-foreground"
+                                    )}
+                                >
+                                    <CalendarIcon className="mr-2 h-4 w-4" />
+                                    {dob ? format(dob, "PPP") : <span>Pick a date</span>}
+                                </Button>
+                                </PopoverTrigger>
+                                <PopoverContent className="w-auto p-0">
+                                <Calendar
+                                    mode="single"
+                                    selected={dob}
+                                    onSelect={setDob}
+                                    captionLayout="dropdown-buttons"
+                                    fromYear={1990}
+                                    toYear={new Date().getFullYear()}
+                                    initialFocus
+                                />
+                                </PopoverContent>
+                            </Popover>
                         </div>
                         <div>
                             <Label htmlFor="classId">Class</Label>
@@ -308,6 +344,10 @@ export default function StudentProfilePage({ params }: { params: { studentId: st
                     <div className="flex justify-between py-2 border-b">
                         <span className="text-muted-foreground">Address</span>
                         <span className="font-medium">{student.address || 'N/A'}</span>
+                    </div>
+                    <div className="flex justify-between py-2 border-b">
+                        <span className="text-muted-foreground">Date of Birth</span>
+                        <span className="font-medium">{student.dob ? format(new Date(student.dob), "PPP") : 'N/A'}</span>
                     </div>
                      <div className="flex justify-between py-2 border-b">
                         <span className="text-muted-foreground">In Tuition</span>

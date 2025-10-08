@@ -17,6 +17,9 @@ export interface Student {
   address?: string;
   openingBalance?: number;
   inTuition?: boolean;
+  dob?: string;
+  totalAttendance?: number;
+  presentAttendance?: number;
 }
 
 export interface ClassFees {
@@ -25,10 +28,10 @@ export interface ClassFees {
   exam: number;
   sports: number;
   music: number;
-  medical: number;
   tuition: number;
   stationery: number;
   tieBelt: number;
+  medical: number;
 }
 
 export interface Class {
@@ -41,11 +44,11 @@ export interface Class {
 export interface PaymentTransaction {
     id: string;
     amount: number;
-    date: Date;
+    date: Date | string;
 }
 
 export interface InvoiceLineItem {
-  feeType: keyof Omit<ClassFees, 'medical'> | 'Medical' | 'Previous Dues';
+  feeType: keyof Omit<ClassFees, 'medical'> | 'Medical' | 'Previous Dues' | string;
   amount: number;
 }
 
@@ -67,7 +70,6 @@ export interface StudentFeeSummary {
   student: Student;
   class: Class;
   latestInvoice: Invoice | null;
-  totalPaidOverall: number;
   overallBalance: number;
   status: 'Paid' | 'Partial' | 'Unpaid' | 'Overpaid';
 }
@@ -76,6 +78,7 @@ export interface SchoolSettings {
   schoolName?: string;
   schoolAddress?: string;
   schoolPhone?: string;
+  schoolLogoUrl?: string;
 }
 
 export interface StudentBill {
@@ -84,24 +87,47 @@ export interface StudentBill {
     class: Class;
     invoice: Invoice;
     previousDues: number;
-    payment?: { amount: number; date: Date };
+    payment?: { amount: number; date: Date | string };
   }
 
-export interface ClassMonthlySummary {
+export interface ClassFeeSummary {
+  class: Class;
   totalBilled: number;
   totalCollected: number;
   totalDues: number;
 }
 
+export interface Exam {
+  id: string;
+  name: string;
+  date: Date;
+}
+
+export interface Subject {
+    id: string;
+    name: string;
+    classId: string;
+    fullMarksTheory: number;
+    fullMarksPractical: number;
+    code: string;
+    isExtra: boolean;
+}
+
+export interface Result {
+    id: string;
+    examId: string;
+    studentId: string;
+    subjectId: string;
+    theoryMarks: number;
+    practicalMarks: number;
+}
+
+
 export interface StudentMarksheet {
   student: Student;
   class: Class;
   exam: Exam;
-  results: {
-    subjectName: string;
-    fullMarksTheory: number;
-    fullMarksPractical: number;
-    theoryMarks: number;
-    practicalMarks: number;
-  }[];
+  results: (Result & Subject)[];
 }
+
+    

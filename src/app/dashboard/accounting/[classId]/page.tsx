@@ -1,4 +1,5 @@
 
+
 "use client"
 
 import * as React from "react"
@@ -13,7 +14,7 @@ import {
 } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle, CardFooter } from "@/components/ui/card"
-import { getStudents, getClassById, getInvoiceForMonth, createOrUpdateInvoice, addPayment, getSettings, bulkCreateInvoices, checkInvoicesExistForMonth } from "@/lib/data"
+import { getStudents, getClassById, getInvoiceForMonth, createOrUpdateInvoice, addPayment, getSettings, bulkCreateInvoices, checkInvoicesExistForMonth, getFeeSummaryForClass } from "@/lib/data"
 import type { StudentFeeSummary, Class, Student, Invoice, ClassFees, StudentBill, ClassMonthlySummary, PaymentTransaction } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import Link from "next/link"
@@ -39,61 +40,6 @@ import { generateReceiptPdf } from "@/components/pdf-receipt"
 import { getNepaliDate } from "@/lib/nepali-date";
 
 const NEPALI_MONTHS = ["Baisakh", "Jestha", "Ashadh", "Shrawan", "Bhadra", "Ashwin", "Kartik", "Mangsir", "Poush", "Magh", "Falgun", "Chaitra"];
-
-async function getFeeSummaryForClass(classId: string, month: string, year: number): Promise<{ summaries: StudentFeeSummary[], monthlySummary: ClassMonthlySummary }> {
-    const [students, studentClass] = await Promise.all([
-      getStudents({ classId }),
-      getClassById(classId),
-    ]);
-  
-    if (!studentClass) return { summaries: [], monthlySummary: { totalBilled: 0, totalCollected: 0, totalDues: 0 } };
-    
-    let totalBilledMonth = 0;
-    let totalCollectedMonth = 0;
-  
-    const summaries = await Promise.all(students.map(async (student) => {
-      const invoice = await getInvoiceForMonth(student.id, month, year);
-      const latestInvoice = await getLatestInvoice(student.id);
-      const overallBalance = latestInvoice ? latestInvoice.balance : (student.openingBalance || 0);
-
-      
-      let status: 'Paid' | 'Partial' | 'Unpaid' | 'Overpaid';
-
-      if (!invoice) {
-        status = 'Unpaid';
-      } else if (overallBalance <= 0) {
-        status = 'Paid';
-        if (overallBalance < 0) {
-            status = 'Overpaid';
-        }
-      } else if (invoice && invoice.totalPaid > 0) {
-        status = 'Partial';
-      } else {
-        status = 'Unpaid';
-      }
-
-      if (invoice) {
-        totalBilledMonth += invoice.lineItems.reduce((acc, item) => item.feeType !== 'Previous Dues' ? acc + item.amount : acc, 0);
-        totalCollectedMonth += invoice.totalPaid;
-      }
-  
-      return {
-        student,
-        class: studentClass,
-        latestInvoice: invoice,
-        totalPaidOverall: latestInvoice?.totalPaid || 0,
-        overallBalance,
-        status,
-      };
-    }));
-
-    const totalDuesMonth = summaries.reduce((acc, s) => acc + s.overallBalance, 0);
-    
-    const monthlySummary = { totalBilled: totalBilledMonth, totalCollected: totalCollectedMonth, totalDues: totalDuesMonth };
-  
-    return { summaries, monthlySummary };
-}
-
 
 function ManageInvoiceDialog({ summary, onActionComplete, month, year }: { summary: StudentFeeSummary; onActionComplete: () => void; month: string, year: number }) {
   const { toast } = useToast();
@@ -144,13 +90,14 @@ function ManageInvoiceDialog({ summary, onActionComplete, month, year }: { summa
 
         if(print) {
             const settings = await getSettings();
-            const previousDues = latestInvoice.lineItems.find(li => li.feeType === 'Previous Dues')?.amount || 0;
+            // Recalculate balance for the PDF receipt
+            const updatedInvoice = { ...latestInvoice, balance: latestInvoice.balance - amount };
             const bill: StudentBill = {
                 school: settings,
                 student: summary.student,
                 class: summary.class,
-                invoice: { ...latestInvoice, balance: latestInvoice.balance - amount }, // Pass the updated balance
-                previousDues,
+                invoice: updatedInvoice,
+                previousDues: updatedInvoice.lineItems.find(li => li.feeType === 'Previous Dues')?.amount || 0,
                 payment: paymentRecord,
             };
             await generateReceiptPdf(bill);
@@ -367,7 +314,7 @@ function DownloadBillButton({ summary }: { summary: StudentFeeSummary }) {
 }
 
 export default function ClassAccountingPage({ params }: { params: { classId: string } }) {
-  const classId = React.use(params).classId;
+  const classId = params.classId;
   const [summaries, setSummaries] = React.useState<StudentFeeSummary[]>([]);
   const [monthlySummary, setMonthlySummary] = React.useState<ClassMonthlySummary>({ totalBilled: 0, totalCollected: 0, totalDues: 0 });
   const [studentClass, setStudentClass] = React.useState<Class | null>(null);
@@ -570,7 +517,7 @@ export default function ClassAccountingPage({ params }: { params: { classId: str
                     रु{(summary.latestInvoice?.totalBilled ?? 0).toLocaleString()}
                   </TableCell>
                   <TableCell className="text-right text-green-600">
-                      रु{summary.totalPaidOverall.toLocaleString()}
+                      रु{summary.latestInvoice?.totalPaid.toLocaleString() || 0}
                   </TableCell>
                   <TableCell className="text-right text-red-600">
                       रु{summary.overallBalance > 0 ? summary.overallBalance.toLocaleString() : 0}
@@ -623,7 +570,7 @@ export default function ClassAccountingPage({ params }: { params: { classId: str
                   </div>
                   <div className="flex justify-between">
                       <span className="text-muted-foreground">Paid Amount:</span>
-                      <span className="text-green-600 font-medium">रु{summary.totalPaidOverall.toLocaleString()}</span>
+                      <span className="text-green-600 font-medium">रु{summary.latestInvoice?.totalPaid.toLocaleString() || 0}</span>
                   </div>
                   <div className="flex justify-between">
                       <span className="text-muted-foreground">Remaining Balance:</span>
@@ -681,3 +628,5 @@ export default function ClassAccountingPage({ params }: { params: { classId: str
     </div>
   )
 }
+
+    

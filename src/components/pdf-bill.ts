@@ -4,9 +4,27 @@ import autoTable from "jspdf-autotable";
 import type { StudentBill } from "@/lib/types";
 import { format } from 'date-fns';
 
-export async function generateBillsPdf(bills: StudentBill[]) {
+async function getClientImageData(url: string): Promise<string | null> {
+    try {
+        const response = await fetch(url);
+        if (!response.ok) return null;
+        const blob = await response.blob();
+        return new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result as string);
+            reader.readAsDataURL(blob);
+        });
+    } catch (error) {
+        console.error("Failed to fetch image for PDF:", error);
+        return null;
+    }
+}
+
+export async function generateBillsPdf(bills: StudentBill[], logoBase64?: string | null) {
   const doc = new jsPDF();
   
+  const logoData = logoBase64 ?? (bills[0]?.school.schoolLogoUrl ? await getClientImageData(bills[0].school.schoolLogoUrl) : null);
+
   for (const [index, bill] of bills.entries()) {
     if (index > 0) {
       doc.addPage();
@@ -14,14 +32,21 @@ export async function generateBillsPdf(bills: StudentBill[]) {
 
     const { school, student, class: studentClass, invoice, previousDues } = bill;
 
-    // --- Header ---
+    // --- Header with Logo ---
+    if (logoData) {
+        doc.addImage(logoData, 'PNG', 15, 12, 20, 20);
+    }
+    
+    const headerTextX = logoData ? 40 : doc.internal.pageSize.getWidth() / 2;
+    const headerAlign = logoData ? "left" : "center";
+
     doc.setFontSize(22);
     doc.setFont("helvetica", "bold");
-    doc.text(school.schoolName || "School Name", doc.internal.pageSize.getWidth() / 2, 20, { align: "center" });
+    doc.text(school.schoolName || "School Name", headerTextX, 20, { align: headerAlign });
     doc.setFontSize(10);
     doc.setFont("helvetica", "normal");
-    doc.text(school.schoolAddress || "School Address", doc.internal.pageSize.getWidth() / 2, 28, { align: "center" });
-    doc.text(`Phone: ${school.schoolPhone || 'N/A'}`, doc.internal.pageSize.getWidth() / 2, 33, { align: "center" });
+    doc.text(school.schoolAddress || "School Address", headerTextX, 28, { align: headerAlign });
+    doc.text(`Phone: ${school.schoolPhone || 'N/A'}`, headerTextX, 33, { align: headerAlign });
     doc.setLineWidth(0.5);
     doc.line(10, 40, 200, 40);
     
@@ -34,7 +59,7 @@ export async function generateBillsPdf(bills: StudentBill[]) {
     doc.setFontSize(11);
     doc.setFont("helvetica", "normal");
     doc.text(`Student Name: ${student.name}`, 15, 65);
-    doc.text(`Class: ${studentClass.name} - ${studentClass.section}`, 15, 72);
+    doc.text(`Class: ${studentClass.name}${studentClass.section ? ` - ${studentClass.section}` : ''}`, 15, 72);
     doc.text(`Roll No: ${student.rollNumber || 'N/A'}`, 15, 79);
     
     doc.text(`Bill No: ${invoice.id.slice(-6).toUpperCase()}`, 195, 65, { align: "right" });
